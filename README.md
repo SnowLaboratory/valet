@@ -1,6 +1,6 @@
 ## Snow Valet
 
-A modified version of Laravel Valet that adds some support for multiple TLDs.
+A modified version of Laravel Valet that adds **some** support for multiple TLDs.
 
 ## See Official Documentation
 
