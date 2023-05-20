@@ -123,43 +123,88 @@ class Site
     public function proxies(): Collection
     {
         $dir = $this->nginxPath();
-        $tld = $this->config->read()['tld'];
+        $tlds = (@$this->config->read()['tlds']) ?? [$this->config->read()['tld']];
         $links = $this->links();
+        $urls = $links->pluck('url');
         $certs = $this->getCertificates();
 
         if (! $this->files->exists($dir)) {
             return collect();
         }
 
-        $proxies = collect($this->files->scandir($dir))
-            ->filter(function ($site, $key) use ($tld) {
-                // keep sites that match our TLD
-                return ends_with($site, '.'.$tld);
-            })->map(function ($site, $key) use ($tld) {
-                // remove the TLD suffix for consistency
-                return str_replace('.'.$tld, '', $site);
-            })->reject(function ($site, $key) use ($links) {
-                return $links->has($site);
-            })->mapWithKeys(function ($site) {
-                $host = $this->getProxyHostForSite($site) ?: '(other)';
+        $files = collect($this->files->scandir($dir));
 
-                return [$site => $host];
-            })->reject(function ($host, $site) {
-                // If proxy host is null, it may be just a normal SSL stub, or something else; either way we exclude it from the list
-                return $host === '(other)';
-            })->map(function ($host, $site) use ($certs, $tld) {
-                $secured = $certs->has($site);
-                $url = ($secured ? 'https' : 'http').'://'.$site.'.'.$tld;
+        $proxies = [];
+        foreach ($files as $file) {
+            $tld = null;
+            foreach ($tlds as $ending) {
+                if (ends_with($file, '.'.$ending)) {
+                    $tld = $ending;
+                    break;
+                }
+            }
 
-                return [
-                    'site' => $site,
-                    'secured' => $secured ? ' X' : '',
-                    'url' => $url,
-                    'path' => $host,
-                ];
-            });
+            if (is_null($tld)) {
+                continue;
+            }
 
-        return $proxies;
+            $site = str_replace('.'.$tld, '', $file);
+
+            $host = $this->getProxyHostForSite($site);
+            if (is_null($host)) {
+                continue;
+            }
+
+            $secured = $certs->has($site);
+            $url = ($secured ? 'https' : 'http').'://'.$site.'.'.$tld;
+
+            if ($urls->contains($url)) {
+                continue;
+            }
+
+            $proxies[] = [
+                'site' => $site,
+                'secured' => $secured ? ' X' : '',
+                'url' => $url,
+                'path' => $host,
+            ];
+
+        }
+
+        // $proxies = collect($this->files->scandir($dir))
+        //     ->filter(function ($site, $key) use ($tlds) {
+        //         // keep sites that match a TLD
+        //         foreach ($tlds as $tld) {
+        //             if (ends_with($site, '.'.$tld)) {
+        //                 return true;
+        //             }
+        //         }
+        //         return false;
+        //     })->map(function ($site, $key) use ($tld) {
+        //         // remove the TLD suffix for consistency
+        //         return str_replace('.'.$tld, '', $site);
+        //     })->filter(function ($site, $key) use ($links) {
+        //         return $links->has($site);
+        //     })->mapWithKeys(function ($site) {
+        //         $host = $this->getProxyHostForSite($site) ?: '(other)';
+
+        //         return [$site => $host];
+        //     })->reject(function ($host, $site) {
+        //         // If proxy host is null, it may be just a normal SSL stub, or something else; either way we exclude it from the list
+        //         return $host === '(other)';
+        //     })->map(function ($host, $site) use ($certs, $tld) {
+        //         $secured = $certs->has($site);
+        //         $url = ($secured ? 'https' : 'http').'://'.$site.'.'.$tld;
+
+        //         return [
+        //             'site' => $site,
+        //             'secured' => $secured ? ' X' : '',
+        //             'url' => $url,
+        //             'path' => $host,
+        //         ];
+        //     });
+
+        return collect($proxies);
     }
 
     /**
@@ -210,10 +255,18 @@ class Site
     public function getSiteConfigFileContents(string $site, ?string $suffix = null): ?string
     {
         $config = $this->config->read();
-        $suffix = $suffix ?: '.'.$config['tld'];
-        $file = str_replace($suffix, '', $site).$suffix;
+        $tlds = (@$config['tlds']) ?? [$config['tld']];
 
-        return $this->files->exists($this->nginxPath($file)) ? $this->files->get($this->nginxPath($file)) : null;
+        foreach($tlds as $tld) {
+            $suffix = '.'.$tld;
+            $file = str_replace($suffix, '', $site).$suffix;
+
+            if ($this->files->exists($this->nginxPath($file))) {
+                return $this->files->get($this->nginxPath($file));
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -239,6 +292,7 @@ class Site
                 $trimToString .= $config['tld'];
             }
 
+            return $certWithoutSuffix;
             return substr($certWithoutSuffix, 0, strrpos($certWithoutSuffix, $trimToString));
         })->flip();
     }
@@ -250,6 +304,7 @@ class Site
     public function getSites(string $path, Collection $certs): Collection
     {
         $config = $this->config->read();
+        $tlds = (@$config['tlds']) ?? [$config['tld']];
 
         $this->files->ensureDirExists($path, user());
 
@@ -761,13 +816,13 @@ class Site
      * @param  string  $url  The domain name to serve
      * @param  string  $host  The URL to proxy to, eg: http://127.0.0.1:8080
      */
-    public function proxyCreate(string $url, string $host, bool $secure = false): void
+    public function proxyCreate(string $url, string $host, bool $secure = false, $tld=null): void
     {
         if (! preg_match('~^https?://.*$~', $host)) {
             throw new \InvalidArgumentException(sprintf('"%s" is not a valid URL', $host));
         }
 
-        $tld = $this->config->read()['tld'];
+        $tld ??= $this->config->read()['tld'];
         if (! ends_with($url, '.'.$tld)) {
             $url .= '.'.$tld;
         }
@@ -798,9 +853,9 @@ class Site
     /**
      * Unsecure the given URL so that it will use HTTP again.
      */
-    public function proxyDelete(string $url): void
+    public function proxyDelete(string $url, $tld=null): void
     {
-        $tld = $this->config->read()['tld'];
+        $tld ??= $this->config->read()['tld'];
         if (! ends_with($url, '.'.$tld)) {
             $url .= '.'.$tld;
         }
@@ -972,7 +1027,7 @@ class Site
     /**
      * Make the domain name based on parked domains or the internal TLD.
      */
-    public function domain(?string $domain): string
+    public function domain(?string $domain, ?string $tld): string
     {
         // if ($this->parked()->pluck('site')->contains($domain)) {
         //     return $domain;
@@ -982,13 +1037,15 @@ class Site
         //     return $parked['site'];
         // }
 
+        $tld ??= $this->config->read()['tld'];
+
         // Don't add .TLD if user already passed the string in with the TLD on the end
-        if ($domain && str_contains($domain, '.'.$this->config->read()['tld'])) {
+        if ($domain && str_contains($domain, '.'.$tld)) {
             return $domain;
         }
 
         // Return either the passed domain, or the current folder name, with .TLD appended
-        return ($domain ?: $this->host(getcwd())).'.'.$this->config->read()['tld'];
+        return ($domain ?: $this->host(getcwd())).'.'.$tld;
     }
 
     /**

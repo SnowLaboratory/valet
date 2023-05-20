@@ -17,8 +17,10 @@ class DnsMasq
     /**
      * Install and configure DnsMasq.
      */
-    public function install(string $tld = 'test'): void
+    public function install(?array $tlds = null): void
     {
+        $tlds ??= [$this->configuration->read()['tld']];
+
         $this->brew->ensureInstalled('dnsmasq');
 
         // For DnsMasq, we enable its feature of loading *.conf from /usr/local/etc/dnsmasq.d/
@@ -26,13 +28,17 @@ class DnsMasq
         // This allows Valet to make changes to our own files without needing to modify the core dnsmasq configs
         $this->ensureUsingDnsmasqDForConfigs();
 
-        $this->createDnsmasqTldConfigFile($tld);
-
-        $this->createTldResolver($tld);
+        foreach ($tlds as $tld) {
+            $this->createDnsmasqTldConfigFile($tld);
+            $this->createTldResolver($tld);
+        }
 
         $this->brew->restartService('dnsmasq');
 
-        info('Valet is configured to serve for TLD [.'.$tld.']');
+        foreach ($tlds as $tld) {
+            info('Valet is configured to serve for TLD [.'.$tld.']');
+        }
+
     }
 
     /**

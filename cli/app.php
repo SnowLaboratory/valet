@@ -1,7 +1,7 @@
 <?php
 
+use Valet\Application;
 use Illuminate\Container\Container;
-use Silly\Application;
 use Silly\Command\Command;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
@@ -32,7 +32,7 @@ if (file_exists(__DIR__.'/../vendor/autoload.php')) {
  */
 Container::setInstance(new Container);
 
-$version = '4.1.1';
+$version = 'snow-4.1.1';
 
 $app = new Application('Laravel Valet', $version);
 
@@ -46,6 +46,14 @@ $dispatcher->addListener(
 
 Upgrader::onEveryRun();
 
+function command(string $command, array $args) {
+    $nonNullArgs = [];
+    foreach (array_filter($args) as $arg=>$value) {
+        $nonNullArgs[] = $arg.$value;
+    }
+    return implode(' ', array_filter([$command, implode(' ', $nonNullArgs)]));
+}
+
 /**
  * Install Valet and any required services.
  */
@@ -58,7 +66,7 @@ $app->command('install', function (OutputInterface $output) {
     output();
     PhpFpm::install();
     output();
-    DnsMasq::install(Configuration::read()['tld']);
+    DnsMasq::install(@Configuration::read()['tlds']);
     output();
     Nginx::restart();
     output();
@@ -190,13 +198,15 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Register a symbolic link with Valet.
      */
-    $app->command('link [name] [--secure] [--isolate]', function ($name, $secure, $isolate) {
+    $app->command('link [name] [--secure] [--tld=] [--isolate]', function ($name, $secure, $tld, $isolate) {
         $linkPath = Site::link(getcwd(), $name = $name ?: basename(getcwd()));
 
         info('A ['.$name.'] symbolic link has been created in ['.$linkPath.'].');
 
         if ($secure) {
-            $this->runCommand('secure');
+            $this->runCommand('secure', [
+                '--tld' => $tld
+            ]);
         }
 
         if ($isolate) {
@@ -223,14 +233,14 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Unlink a link from the Valet links directory.
      */
-    $app->command('unlink [name]', function (OutputInterface $output, $name) {
+    $app->command('unlink [name] [--tld=]', function (OutputInterface $output, $name, $tld=null) {
         $name = Site::unlink($name);
         info('The ['.$name.'] symbolic link has been removed.');
 
         if (Site::isSecured($name)) {
             info('Unsecuring '.$name.'...');
 
-            Site::unsecure(Site::domain($name));
+            Site::unsecure(Site::domain($name, $tld));
 
             Nginx::restart();
         }
@@ -239,11 +249,15 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Secure the given domain with a trusted TLS certificate.
      */
-    $app->command('secure [domain] [--expireIn=]', function (OutputInterface $output, $domain = null, $expireIn = 368) {
-        $url = Site::domain($domain);
+    $app->command('secure [domain] [--tld=] [--expireIn=]', function (OutputInterface $output, $domain = null, $tld=null, $expireIn = 368) {
+        $url = Site::domain($domain, $tld);
 
         Site::secure($url, null, $expireIn);
 
+        DnsMasq::createDnsmasqTldConfigFile($tld);
+        DnsMasq::createTldResolver($tld);
+
+        DnsMasq::restart();
         Nginx::restart();
 
         info('The ['.$url.'] site has been secured with a fresh TLS certificate.');
@@ -254,10 +268,11 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Stop serving the given domain over HTTPS and remove the trusted TLS certificate.
      */
-    $app->command('unsecure [domain] [--all]', function (OutputInterface $output, $domain = null, $all = null) {
+    $app->command('unsecure [domain] [--tld=] [--all]', function (OutputInterface $output, $domain = null, $tld=null, $all = null) {
         if ($all) {
             Site::unsecureAll();
 
+            DnsMasq::restart();
             Nginx::restart();
 
             info('All Valet sites will now serve traffic over HTTP.');
@@ -265,10 +280,11 @@ if (is_dir(VALET_HOME_PATH)) {
             return;
         }
 
-        $url = Site::domain($domain);
+        $url = Site::domain($domain, $tld);
 
         Site::unsecure($url);
 
+        DnsMasq::restart();
         Nginx::restart();
 
         info('The ['.$url.'] site will now serve traffic over HTTP.');
@@ -288,8 +304,11 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Create an Nginx proxy config for the specified domain.
      */
-    $app->command('proxy domain host [--secure]', function (OutputInterface $output, $domain, $host, $secure) {
-        Site::proxyCreate($domain, $host, $secure);
+    $app->command('proxy domain host [--secure] [--tld=]', function (OutputInterface $output, $domain, $host, $secure, $tld=null) {
+        Site::proxyCreate($domain, $host, $secure, $tld);
+        DnsMasq::createDnsmasqTldConfigFile($tld);
+        DnsMasq::createTldResolver($tld);
+        DnsMasq::restart();
         Nginx::restart();
     })->descriptions('Create an Nginx proxy site for the specified host. Useful for docker, mailhog etc.', [
         '--secure' => 'Create a proxy with a trusted TLS certificate',
@@ -298,8 +317,8 @@ if (is_dir(VALET_HOME_PATH)) {
     /**
      * Delete an Nginx proxy config.
      */
-    $app->command('unproxy domain', function (OutputInterface $output, $domain) {
-        Site::proxyDelete($domain);
+    $app->command('unproxy domain [--tld=]', function (OutputInterface $output, $domain, $tld=null) {
+        Site::proxyDelete($domain, $tld);
         Nginx::restart();
     })->descriptions('Delete an Nginx proxy config.');
 

@@ -101,11 +101,18 @@ class Server
      */
     public function siteNameFromHttpHost(string $httpHost): string
     {
-        $siteName = basename(
-            // Filter host to support wildcard dns feature
-            $this->allowWildcardDnsDomains($httpHost),
-            '.'.$this->config['tld']
-        );
+        $tlds = (@$this->config['tlds']) ?? [$this->config['tld']];
+
+        foreach ($tlds as $tld) {
+            if (strpos($_SERVER['HTTP_HOST'], '.'.$tld) === false) {
+                continue;
+            }
+            $siteName = basename(
+                // Filter host to support wildcard dns feature
+                $this->allowWildcardDnsDomains($httpHost),
+                '.'.$tld
+            );
+        }
 
         if (strpos($siteName, 'www.') === 0) {
             $siteName = substr($siteName, 4);
