@@ -8,6 +8,24 @@ Documentation for Valet can be found on the [Laravel website](https://laravel.co
 
 ## Installation
 
+Edit `~/.composer/composer.json`
+
+```
+{
+    "repositories": {
+        "snowlaboratory/valet": {
+            "type": "vcs",
+            "url": "https://github.com/SnowLaboratory/valet.git"
+        }
+    },
+    "require": {
+        "laravel/valet": "dev-master",
+    }
+}
+```
+
+run `composer global update` 
+
 See official documentation then modify `~/.config/valet/config.json`
 
 make your config include the `tlds` key. Example below:
